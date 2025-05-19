@@ -1,7 +1,8 @@
 import torch
 from transformers import AutoTokenizer
 import json
-
+import matplotlib.pyplot as plt
+import os
 from llama import GetAttnMapLM
 
 
@@ -187,9 +188,59 @@ def cumsum_attn_score_for_each_layer(attn_map_at_one_decode_step):
     return processed_layers_attn
 
 
-def vis_cumsum_attn_for_each_layer_each_step(step_i, layer_i, attn_cumsum):
-    # 可视化一下，直接 plt.save 保存到 cumsum_{step_i}_{layer_i}.jpg里面
-    pass
+def vis_cumsum_attn_for_each_layer_each_step(step_i, layer_i, attn_cumsum_tensor, output_dir="visualizations"):
+    """
+    Visualizes the cumulative attention scores for a given layer and decode step,
+    and saves it as a JPG file.
+
+    Args:
+        step_i (int): The current decode step index (0-based).
+        layer_i (int): The current layer index (0-based).
+        attn_cumsum_tensor (torch.Tensor): The cumulative attention tensor for this layer/step.
+                                           Expected shape (batch_size, key_sequence_length).
+                                           Typically batch_size is 1.
+        output_dir (str): Directory to save the visualization.
+    """
+    if attn_cumsum_tensor is None or attn_cumsum_tensor.numel() == 0:
+        print(f"  Visualization skipped for step {step_i + 1}, layer {layer_i + 1}: Empty tensor.")
+        return
+
+    if not os.path.exists(output_dir):
+        try:
+            os.makedirs(output_dir)
+        except OSError as e:
+            print(f"Error creating directory {output_dir}: {e}. Visualizations will not be saved.")
+            return
+
+    # Assuming batch_size is 1, so we take the first element.
+    # If batch_size > 1, one might loop or plot all, or average.
+    # For this specific function, we'll plot the first batch element.
+    if attn_cumsum_tensor.shape[0] > 1:
+        print(
+            f"  Warning: attn_cumsum_tensor has batch size {attn_cumsum_tensor.shape[0]} for step {step_i + 1}, layer {layer_i + 1}. Visualizing first batch element only.")
+
+    data_to_plot = attn_cumsum_tensor[0].cpu().numpy()  # Shape: (key_sequence_length,)
+
+    if data_to_plot.ndim != 1:
+        print(
+            f"  Visualization skipped for step {step_i + 1}, layer {layer_i + 1}: Expected 1D data after batch selection, got {data_to_plot.ndim}D.")
+        return
+
+    plt.figure(figsize=(10, 4))
+    plt.plot(data_to_plot)
+    plt.title(f"Cumulative Attention: Decode Step {step_i + 1}, Layer {layer_i + 1}")
+    plt.xlabel("Key Sequence Position (Token Index in KV Cache)")
+    plt.ylabel("Cumulative Attention Score (Averaged over Heads)")
+    plt.grid(True)
+
+    filename = f"cumsum_step_{step_i + 1}_layer_{layer_i + 1}.jpg"
+    filepath = os.path.join(output_dir, filename)
+    try:
+        plt.savefig(filepath)
+        print(f"    Saved visualization to {filepath}")
+    except Exception as e:
+        print(f"    Error saving plot to {filepath}: {e}")
+    plt.close()  # Close the figure to free memory
 
 
 if __name__ == '__main__':
@@ -236,9 +287,12 @@ if __name__ == '__main__':
                     processed_layer_attns_for_step = cumsum_attn_score_for_each_layer(attn_map_one_step)
                     all_steps_processed_attns.append(processed_layer_attns_for_step)
 
-                    # Print shapes of processed attentions for this step
-                    for layer_idx, proc_attn in enumerate(processed_layer_attns_for_step):
-                        print(f"    Layer {layer_idx} processed attention shape: {proc_attn.shape}")
+                    # Visualize for this step
+                    for layer_idx, cumsum_attn_tensor in enumerate(processed_layer_attns_for_step):
+                        print(f"    Layer {layer_idx + 1} processed cumsum attention shape: {cumsum_attn_tensor.shape}")
+                        vis_cumsum_attn_for_each_layer_each_step(
+                            step_idx, layer_idx, cumsum_attn_tensor
+                        )
             else:
                 print("No attention scores were collected (e.g., max_new_tokens was small or EOS met early).")
             # `all_steps_processed_attns` is now a list (decode steps) of lists (layers)
