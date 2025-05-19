@@ -234,7 +234,7 @@ def vis_layer_similarity_matrix(
         if num_layers > 30:  # 对于非常多的层，可能需要更智能的刻度处理
             step = max(1, num_layers // 15)  # 每隔 step 个显示一个刻度
             ticks = list(range(0, num_layers, step))
-            tick_labels = [str(t + 1) for t in ticks]
+            tick_labels = [str(t) for t in ticks]
 
         plt.xticks(ticks, tick_labels, fontsize=tick_fontsize)
         plt.yticks(ticks, tick_labels, fontsize=tick_fontsize)
@@ -348,5 +348,5 @@ if __name__ == '__main__':
         sims_lst += [torch.mean(layers_sim[i, i:i + 8]).item()]
     xs = list(range(24))
     plt.plot(xs, sims_lst)
-    plt.savefig("visualizations/8layers_sim.jpg", dpi=1000)
+    plt.savefig("visualization/8layers_sim.jpg", dpi=1000)
         
