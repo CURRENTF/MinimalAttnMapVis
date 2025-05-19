@@ -219,7 +219,7 @@ def vis_cumsum_attn_for_each_layer_each_step(step_i, layer_i, attn_cumsum_tensor
         print(
             f"  Warning: attn_cumsum_tensor has batch size {attn_cumsum_tensor.shape[0]} for step {step_i + 1}, layer {layer_i + 1}. Visualizing first batch element only.")
 
-    data_to_plot = attn_cumsum_tensor[0].cpu().numpy()  # Shape: (key_sequence_length,)
+    data_to_plot = attn_cumsum_tensor[0].cpu().float().numpy()  # Shape: (key_sequence_length,)
 
     if data_to_plot.ndim != 1:
         print(
@@ -244,62 +244,51 @@ def vis_cumsum_attn_for_each_layer_each_step(step_i, layer_i, attn_cumsum_tensor
 
 
 if __name__ == '__main__':
-    MODEL_PATH = "path/to/your/GetAttnMapLM/model"
-    DATA_PATH = "path/to/your/data.jsonl"
-    SAMPLE_NUM = 2
+    MODEL_PATH = "../models/Llama-3-8B-Instruct-262k"
+    DATA_PATH = "../OmniKV/benchmark/long_bench/data/hotpotqa.jsonl"
+    SAMPLE_NUM = 1
     MAX_NEW_TOKENS_GENERATION = 20
 
-    # --- Placeholder for running the script ---
-    print("Starting example usage (ensure MODEL_PATH and DATA_PATH are set)...")
+    print(f"Loading model and tokenizer from: {MODEL_PATH}")
+    model, tkn = load_model_and_tokenizer(MODEL_PATH)
 
-    try:
-        # 1. Load model and tokenizer
-        print(f"Loading model and tokenizer from: {MODEL_PATH}")
-        model, tkn = load_model_and_tokenizer(MODEL_PATH)
+    # 2. Load data
+    print(f"Loading data from: {DATA_PATH} (first {SAMPLE_NUM} samples)")
+    data_samples = load_data(DATA_PATH, SAMPLE_NUM)
+    if not data_samples:
+        print("No data loaded. Exiting.")
+    else:
+        print(f"Loaded {len(data_samples)} samples.")
 
-        # 2. Load data
-        print(f"Loading data from: {DATA_PATH} (first {SAMPLE_NUM} samples)")
-        data_samples = load_data(DATA_PATH, SAMPLE_NUM)
-        if not data_samples:
-            print("No data loaded. Exiting.")
+    for i, sample in enumerate(data_samples):
+        input_text = sample
+
+        print(f"Input text: {input_text}\n")
+
+        # 3. Greedy decode and get attention scores
+        output_text, collected_attentions = greedy_decode(input_text, model, tkn, max_new_tokens=MAX_NEW_TOKENS_GENERATION)
+        output_text = input_text + output_text
+
+        print(f"Generated text: {output_text}")
+        print(f"Number of decode steps for which attentions were collected: {len(collected_attentions)}")
+
+        # 4. Process attention scores for each step (if any were collected)
+        all_steps_processed_attns = []
+        if collected_attentions:
+            for step_idx, attn_map_one_step in enumerate(collected_attentions):
+                print(f"  Processing attentions for decode step {step_idx + 1}:")
+                # attn_map_one_step is a tuple of layer attentions for this decode step
+                # Each layer_attn tensor is (batch_size, num_heads, 1, key_len_at_this_step)
+                processed_layer_attns_for_step = cumsum_attn_score_for_each_layer(attn_map_one_step)
+                all_steps_processed_attns.append(processed_layer_attns_for_step)
+
+                # Visualize for this step
+                for layer_idx, cumsum_attn_tensor in enumerate(processed_layer_attns_for_step):
+                    print(f"    Layer {layer_idx + 1} processed cumsum attention shape: {cumsum_attn_tensor.shape}")
+                    vis_cumsum_attn_for_each_layer_each_step(
+                        step_idx, layer_idx, cumsum_attn_tensor
+                    )
         else:
-            print(f"Loaded {len(data_samples)} samples.")
-
-        for i, sample in enumerate(data_samples):
-            input_text = sample
-
-            print(f"Input text: {input_text}\n")
-
-            # 3. Greedy decode and get attention scores
-            output_text, collected_attentions = greedy_decode(input_text, model, tkn, max_new_tokens=MAX_NEW_TOKENS_GENERATION)
-            output_text = input_text + output_text
-
-            print(f"Generated text: {output_text}")
-            print(f"Number of decode steps for which attentions were collected: {len(collected_attentions)}")
-
-            # 4. Process attention scores for each step (if any were collected)
-            all_steps_processed_attns = []
-            if collected_attentions:
-                for step_idx, attn_map_one_step in enumerate(collected_attentions):
-                    print(f"  Processing attentions for decode step {step_idx + 1}:")
-                    # attn_map_one_step is a tuple of layer attentions for this decode step
-                    # Each layer_attn tensor is (batch_size, num_heads, 1, key_len_at_this_step)
-                    processed_layer_attns_for_step = cumsum_attn_score_for_each_layer(attn_map_one_step)
-                    all_steps_processed_attns.append(processed_layer_attns_for_step)
-
-                    # Visualize for this step
-                    for layer_idx, cumsum_attn_tensor in enumerate(processed_layer_attns_for_step):
-                        print(f"    Layer {layer_idx + 1} processed cumsum attention shape: {cumsum_attn_tensor.shape}")
-                        vis_cumsum_attn_for_each_layer_each_step(
-                            step_idx, layer_idx, cumsum_attn_tensor
-                        )
-            else:
-                print("No attention scores were collected (e.g., max_new_tokens was small or EOS met early).")
-            # `all_steps_processed_attns` is now a list (decode steps) of lists (layers)
-            # where each inner element is a tensor of shape (batch_size, key_len_at_that_step)
-
-    except ImportError as e:
-        print(f"ImportError: {e}. Please ensure all required libraries (like 'llama') are installed.")
-    except Exception as e:
-        # Catch other potential errors, e.g. during model loading if paths are wrong.
-        print(f"An unexpected error occurred: {e}")
+            print("No attention scores were collected (e.g., max_new_tokens was small or EOS met early).")
+        # `all_steps_processed_attns` is now a list (decode steps) of lists (layers)
+        # where each inner element is a tensor of shape (batch_size, key_len_at_that_step)
