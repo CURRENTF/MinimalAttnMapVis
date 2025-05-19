@@ -342,4 +342,5 @@ if __name__ == '__main__':
 
         layers_sim /= sim_cal_step
         vis_layer_similarity_matrix(layers_sim)
-        for i in range()
+        for i in range(32):
+            print(i, "sim", torch.mean(layers_sim[i, i:i+8]))
