@@ -346,3 +346,4 @@ if __name__ == '__main__':
         # where each inner element is a tensor of shape (batch_size, key_len_at_that_step)
 
         layers_sim /= sim_cal_step
+        vis_layer_similarity_matrix(layers_sim)
