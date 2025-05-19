@@ -3,117 +3,112 @@ from transformers import AutoTokenizer
 import json
 import matplotlib.pyplot as plt
 import os
-# Assuming 'llama.py' with GetAttnMapLM is in the same directory or PYTHONPATH
 from llama import GetAttnMapLM
 
-# --- Configuration ---
-MODEL_PATH = "../models/Llama-3-8B-Instruct-262k"  # Update with your model path
-DATA_PATH = "../OmniKV/benchmark/long_bench/data/hotpotqa.jsonl"  # Update with your data path
-SAMPLE_NUM = 1  # Number of samples to process from the data file
-MAX_NEW_TOKENS_GENERATION = 20  # Max new tokens (after the first one derived from prompt)
-OUTPUT_VIS_DIR = "visualizations"  # Directory to save plots
-SIMILARITY_TOP_K = 1024  # K for top-k tokens in attention similarity calculation
-PLOT_DPI = 300  # DPI for saved plots
 
-# Ensure visualization directory exists
-os.makedirs(OUTPUT_VIS_DIR, exist_ok=True)
-
-
-# --- Model and Tokenizer Loading ---
 def load_model_and_tokenizer(model_path):
-    """Loads the GetAttnMapLM model and its tokenizer."""
-    print(f"Loading model and tokenizer from: {model_path}")
     model = GetAttnMapLM.from_pretrained(model_path, device_map="cuda:0", torch_dtype=torch.bfloat16)
     tkn = AutoTokenizer.from_pretrained(model_path)
-    print("Model and tokenizer loaded.")
     return model, tkn
 
 
-# --- Data Loading ---
-def load_data(data_path, sample_num=10):
-    """Loads data from a JSONL file."""
-    data_list = []
-    try:
-        with open(data_path, 'r', encoding='utf-8') as f:
-            for i, line in enumerate(f):
-                if i >= sample_num:
-                    break
-                d = json.loads(line.strip())
-                # Formatting the input as context and question
-                data_list.append(f"Context: {d['context']}\nQuestion: {d['input']}\n")
-        print(f"Loaded {len(data_list)} samples from {data_path}.")
-    except FileNotFoundError:
-        print(f"Error: Data file not found at {data_path}")
-    except json.JSONDecodeError as e:
-        print(f"Error decoding JSON in {data_path}: {e}")
-    return data_list
-
-
-# --- Greedy Decoding with Attention Collection ---
 def greedy_decode(input_text, model, tkn, max_new_tokens=50):
     """
     Generates text using greedy decoding and collects attention scores from decode phase.
+
     Args:
         input_text (str): The prompt text.
         model: The GetAttnMapLM model instance.
         tkn: The tokenizer instance.
-        max_new_tokens (int): Max new tokens to generate. Attentions are collected for tokens
-                              generated *after* the first one (which is derived from prefill).
+        max_new_tokens (int): The maximum number of new tokens to generate.
+
     Returns:
         tuple: (output_text, collected_decode_attentions)
-               output_text (str): Generated text including prompt.
-               collected_decode_attentions (list): List of tuples (one per decode step).
-                                                   Each tuple contains layer attentions:
+               output_text (str): The generated text including the prompt.
+               collected_decode_attentions (list): A list of tuples. Each tuple contains
+                                                   attention tensors for each layer for a single
+                                                   decode step. Attention tensor shape is
                                                    (batch_size, num_heads, 1, key_sequence_length).
+                                                   The list corresponds to the generated tokens
+                                                   *after* the first one derived from the prompt.
     """
-    model.eval()
+    model.eval()  # Set model to evaluation mode
+
     inputs = tkn(input_text, return_tensors="pt").to(model.device)
     input_ids_prompt = inputs.input_ids
-    current_generated_ids = input_ids_prompt
+
+    current_generated_ids = input_ids_prompt  # Holds the full sequence including prompt and generated tokens
+
     collected_decode_attentions = []
+
     past_key_values = None
 
-    if max_new_tokens == 0:  # Generate 0 new tokens, just return prompt
-        return tkn.decode(current_generated_ids[0], skip_special_tokens=True), []
+    if max_new_tokens == 0:
+        output_text = tkn.decode(current_generated_ids[0], skip_special_tokens=True)
+        return output_text, []
 
-    with torch.no_grad():
+    with torch.no_grad():  # Disable gradient calculations for inference
         # --- Prefill Phase ---
+        # Process the entire prompt to get initial past_key_values and logits for the first token.
         # GetAttnMapLM is specified to NOT output attentions in this prefill phase.
-        prefill_outputs = model(input_ids=input_ids_prompt, use_cache=True)
+        prefill_outputs = model(
+            input_ids=input_ids_prompt,
+            use_cache=True
+            # output_attentions is internally False for prefill by GetAttnMapLM
+            # or we could explicitly pass output_attentions=False if GetAttnMapLM
+            # respects user overrides for its special behavior.
+            # Assuming GetAttnMapLM handles this correctly based on phase.
+        )
         logits_prefill = prefill_outputs.logits
         past_key_values = prefill_outputs.past_key_values
 
         # Generate the first token based on the prompt
-        next_token_logits = logits_prefill[:, -1, :]
+        next_token_logits = logits_prefill[:, -1, :]  # Logits for the last token of the prompt
         next_token_id = torch.argmax(next_token_logits, dim=-1).unsqueeze(-1)
+
         current_generated_ids = torch.cat([current_generated_ids, next_token_id], dim=-1)
 
+        # If EOS is generated after the first token, finish early.
+        # No decode attentions collected yet as this token came from prefill_outputs.
         if tkn.eos_token_id is not None and next_token_id.item() == tkn.eos_token_id:
-            return tkn.decode(current_generated_ids[0], skip_special_tokens=True), []
+            output_text = tkn.decode(current_generated_ids[0], skip_special_tokens=True)
+            return output_text, collected_decode_attentions  # Should be empty
 
         # --- Decode Phase ---
-        # Loop for remaining (max_new_tokens - 1) tokens, as one is already generated.
+        # Loop to generate remaining (max_new_tokens - 1) tokens, as one is already generated.
         for _ in range(max_new_tokens - 1):
-            decode_input_ids = next_token_id  # Input for this step is the previously generated token
+            # The input for this decode step is the token generated in the previous step.
+            decode_input_ids = next_token_id
+
             outputs_decode_step = model(
                 input_ids=decode_input_ids,
                 past_key_values=past_key_values,
-                use_cache=True  # GetAttnMapLM should handle output_attentions=True for decode phase
+                use_cache=True
+                # output_attentions is internally True for decode by GetAttnMapLM
             )
 
             logits_decode_step = outputs_decode_step.logits
-            past_key_values = outputs_decode_step.past_key_values
+            past_key_values = outputs_decode_step.past_key_values  # Update KV cache
 
             # Collect attention scores from this decode step
+            # GetAttnMapLM is expected to provide 'attentions' in outputs_decode_step.
             if hasattr(outputs_decode_step, 'attentions') and outputs_decode_step.attentions is not None:
-                # Detach and move to CPU to save GPU memory
+                # attentions is a tuple (one for each layer) of torch.FloatTensor
+                # of shape (batch_size, num_heads, sequence_length=1, key_sequence_length)
+                # Detach and move to CPU to save GPU memory, especially for long generations.
                 step_attentions = tuple(att.detach().cpu() for att in outputs_decode_step.attentions)
                 collected_decode_attentions.append(step_attentions)
+            # If GetAttnMapLM guarantees attentions in decode, no 'else' needed.
+            # If not, one might log a warning or append a placeholder.
 
-            next_token_logits = logits_decode_step[:, -1, :]
+            # Determine the next token
+            next_token_logits = logits_decode_step[:, -1, :]  # Logits for the newly generated token
             next_token_id = torch.argmax(next_token_logits, dim=-1).unsqueeze(-1)
+
+            # Append the new token to the sequence
             current_generated_ids = torch.cat([current_generated_ids, next_token_id], dim=-1)
 
+            # Check for EOS token
             if tkn.eos_token_id is not None and next_token_id.item() == tkn.eos_token_id:
                 break
 
@@ -121,104 +116,148 @@ def greedy_decode(input_text, model, tkn, max_new_tokens=50):
     return output_text, collected_decode_attentions
 
 
-# --- Attention Processing ---
+def load_data(data_path, sample_num=10):
+    """
+    Loads data from a JSONL file.
+
+    Args:
+        data_path (str): Path to the JSONL file.
+        sample_num (int): Number of samples to load from the beginning of the file.
+
+    Returns:
+        list: A list of dictionaries, where each dictionary is a loaded JSON object.
+    """
+    data_list = []
+    try:
+        with open(data_path, 'r', encoding='utf-8') as f:
+            for i, line in enumerate(f):
+                if i >= sample_num:
+                    break
+                d = json.loads(line.strip())
+                data_list.append(f"Context: {d['context']}\nQuestion: {d['input']}\n")
+    except FileNotFoundError:
+        print(f"Error: Data file not found at {data_path}")
+        return []
+    except json.JSONDecodeError as e:
+        print(f"Error decoding JSON in {data_path} on line {i + 1}: {e}")
+        # Optionally, continue loading other lines or return partially loaded data
+        return data_list
+    return data_list
+
+
 def cumsum_attn_score_for_each_layer(attn_map_at_one_decode_step):
     """
-    Processes layer attentions from a single decode step: averages over heads, then cumsum over key sequence.
+    Processes attention scores for each layer from a single decode step.
+    It averages over heads and then calculates the cumulative sum over the key sequence length.
+
     Args:
-        attn_map_at_one_decode_step (tuple): Tuple of attention tensors from a single decode step.
-                                            Each tensor (layer_attn) has shape (B, H, 1, K_len).
+        attn_map_at_one_decode_step (tuple): A tuple of attention tensors from a single decode step.
+                                            Each tensor corresponds to a layer and has a shape like
+                                            (batch_size, num_heads, query_length=1, key_sequence_length).
+                                            For typical decode steps, batch_size=1 and query_length=1.
+
     Returns:
-        list: A list of processed attention tensors. Each tensor in the list has shape (B, K_len).
+        list: A list of processed attention tensors. Each tensor in the list has shape
+              (batch_size, key_sequence_length) after averaging over heads and
+              (batch_size, key_sequence_length) after cumsum.
     """
     processed_layers_attn = []
-    if not attn_map_at_one_decode_step: return []
+    if attn_map_at_one_decode_step is None:
+        return []
 
     for layer_attn in attn_map_at_one_decode_step:
-        if layer_attn.ndim != 4 or layer_attn.shape[2] != 1:
-            # This might indicate an issue with GetAttnMapLM or unexpected input
-            # For now, we'll assume correct shapes as per GetAttnMapLM's design for decode steps.
-            # If robust handling is needed, one might append a placeholder or log a more severe warning.
-            print(f"Warning: Unexpected attention tensor shape {layer_attn.shape}. Expected (B, H, 1, K).")
-            continue  # Skip this layer's processing for this step if shape is wrong
+        # layer_attn expected shape: (batch_size, num_heads, 1, key_len)
 
-        squeezed_attn = layer_attn.squeeze(2)  # Shape: (batch_size, num_heads, key_len)
+        # Ensure it's 4D, though typical decode attention might be (batch, heads, 1, key_len)
+        if layer_attn.ndim != 4:
+            raise ValueError(f"Expected 4D attention tensor, got {layer_attn.ndim}D with shape {layer_attn.shape}")
+
+        # Squeeze the query_length dimension (dim 2), assuming it's always 1 in decode.
+        # If query_length > 1, this logic would need adjustment (e.g., mean over query_length too, or process each query pos).
+        if layer_attn.shape[2] == 1:
+            squeezed_attn = layer_attn.squeeze(2)  # Shape: (batch_size, num_heads, key_len)
+        else:
+            raise ValueError(f"attn shape: {layer_attn.shape}")
+
+        # 1. Average over the head dimension (dim 1 of squeezed_attn)
         avg_head_attn = torch.mean(squeezed_attn, dim=1)  # Shape: (batch_size, key_len)
+        # 2. Calculate cumulative sum along the key_sequence_length dimension (last dimension)
         cumsum_attn = torch.cumsum(avg_head_attn, dim=-1)  # Shape: (batch_size, key_len)
         processed_layers_attn.append(cumsum_attn)
+
     return processed_layers_attn
 
 
-def cal_attn_map_similarity(raw_layer_attn_i, raw_layer_attn_j, top_k_tokens):
+def vis_cumsum_attn_for_each_layer_each_step(step_i, layer_i, attn_cumsum_tensor, output_dir="visualizations"):
     """
-    Calculates a similarity score between two layers' attention patterns for a single decode step.
-    Similarity is defined by how much layer j focuses on the top-k tokens of layer i.
+    Visualizes the cumulative attention scores for a given layer and decode step,
+    and saves it as a JPG file.
+
     Args:
-        raw_layer_attn_i (torch.Tensor): Raw attention tensor for layer i.
-                                         Shape (batch_size, num_heads, 1, key_sequence_length).
-        raw_layer_attn_j (torch.Tensor): Raw attention tensor for layer j.
-                                         Shape (batch_size, num_heads, 1, key_sequence_length).
-        top_k_tokens (int): Number of top tokens from layer i's attention to consider.
-    Returns:
-        float: The similarity score.
+        step_i (int): The current decode step index (0-based).
+        layer_i (int): The current layer index (0-based).
+        attn_cumsum_tensor (torch.Tensor): The cumulative attention tensor for this layer/step.
+                                           Expected shape (batch_size, key_sequence_length).
+                                           Typically batch_size is 1.
+        output_dir (str): Directory to save the visualization.
     """
-    # Ensure tensors are not empty (e.g., key_sequence_length is 0)
-    if raw_layer_attn_i.shape[-1] == 0 or raw_layer_attn_j.shape[-1] == 0:
-        return 0.0
+    if attn_cumsum_tensor is None or attn_cumsum_tensor.numel() == 0:
+        print(f"  Visualization skipped for step {step_i + 1}, layer {layer_i + 1}: Empty tensor.")
+        return
 
-    # Assuming batch_size = 1 for decode steps.
-    # Squeeze query_length dim (dim 2), then average over heads (dim 1 of squeezed tensor).
-    avg_head_attn_i = torch.mean(raw_layer_attn_i.squeeze(2), dim=1).squeeze(0)  # Shape: (key_len,)
-    avg_head_attn_j = torch.mean(raw_layer_attn_j.squeeze(2), dim=1).squeeze(0)  # Shape: (key_len,)
+    if not os.path.exists(output_dir):
+        try:
+            os.makedirs(output_dir)
+        except OSError as e:
+            print(f"Error creating directory {output_dir}: {e}. Visualizations will not be saved.")
+            return
 
-    # Check if averaging resulted in 1D tensors and key_len > 0
-    if not (avg_head_attn_i.ndim == 1 and avg_head_attn_j.ndim == 1 and avg_head_attn_i.shape[0] > 0):
-        return 0.0
+    # Assuming batch_size is 1, so we take the first element.
+    # If batch_size > 1, one might loop or plot all, or average.
+    # For this specific function, we'll plot the first batch element.
+    if attn_cumsum_tensor.shape[0] > 1:
+        print(
+            f"  Warning: attn_cumsum_tensor has batch size {attn_cumsum_tensor.shape[0]} for step {step_i + 1}, layer {layer_i + 1}. Visualizing first batch element only.")
 
-    actual_k = min(top_k_tokens, avg_head_attn_i.shape[0])
-    if actual_k == 0:  # If key_len is 0 (already checked) or top_k_tokens is 0
-        return 0.0
-
-    _, top_indices_i = torch.topk(avg_head_attn_i, k=actual_k, dim=-1)
-
-    # Sum the attention scores of layer j at the top-k positions identified by layer i
-    similarity_score = torch.sum(avg_head_attn_j[top_indices_i]).item()
-    return similarity_score
-
-
-# --- Visualization ---
-def vis_cumsum_attn_for_each_layer_each_step(sample_id, step_i, layer_i, attn_cumsum_tensor, output_dir, dpi):
-    """Visualizes cumulative attention for a layer/step."""
-    if attn_cumsum_tensor is None or attn_cumsum_tensor.numel() == 0: return
-
-    # Assuming batch_size is 1, take the first element.
     data_to_plot = attn_cumsum_tensor[0].cpu().float().numpy()  # Shape: (key_sequence_length,)
-    if data_to_plot.ndim != 1: return  # Should be 1D after batch selection
+
+    if data_to_plot.ndim != 1:
+        print(
+            f"  Visualization skipped for step {step_i + 1}, layer {layer_i + 1}: Expected 1D data after batch selection, got {data_to_plot.ndim}D.")
+        return
 
     plt.figure(figsize=(10, 4))
     plt.plot(data_to_plot)
-    plt.title(f"Sample {sample_id + 1} - CumSum Attn: Decode Step {step_i + 1}, Layer {layer_i + 1}")
+    plt.title(f"Cumulative Attention: Decode Step {step_i + 1}, Layer {layer_i + 1}")
     plt.xlabel("Key Sequence Position (Token Index in KV Cache)")
-    plt.ylabel("Cumulative Attention Score (Avg. Heads)")
+    plt.ylabel("Cumulative Attention Score (Averaged over Heads)")
     plt.grid(True)
 
-    filename = f"sample_{sample_id + 1}_cumsum_step_{step_i + 1}_layer_{layer_i + 1}.jpg"
+    filename = f"cumsum_step_{step_i + 1}_layer_{layer_i + 1}.jpg"
     filepath = os.path.join(output_dir, filename)
     try:
-        plt.savefig(filepath, dpi=dpi)
+        plt.savefig(filepath, dpi=1000)
+        print(f"    Saved visualization to {filepath}")
     except Exception as e:
-        print(f"    Error saving cumsum plot to {filepath}: {e}")
-    finally:
-        plt.close()
+        print(f"    Error saving plot to {filepath}: {e}")
+    plt.close()  # Close the figure to free memory
 
 
-def vis_layer_similarity_matrix(sample_id, step_i, similarity_matrix, output_dir, dpi):
+def cal_attn_map_similarity(attn_cumsum_tensor_layer_i, attn_cumsum_tensor_layer_j):
+    avg_head_attn_i = torch.mean(attn_cumsum_tensor_layer_i.squeeze(), dim=0)
+    avg_head_attn_j = torch.mean(attn_cumsum_tensor_layer_j.squeeze(), dim=0)
+    assert avg_head_attn_i.ndim == 1
+    vi, idx_i = torch.topk(avg_head_attn_i, k=1024, dim=-1)
+    return torch.sum(avg_head_attn_j[idx_i]).item()
+
+
+def vis_layer_similarity_matrix(similarity_matrix, output_dir="visualization", dpi=1000):
     """Visualizes the layer-wise attention similarity matrix as a heatmap."""
     plt.figure(figsize=(12, 10))
     # Using aspect='auto' and letting imshow determine vmin/vmax, or they can be fixed.
     plt.imshow(similarity_matrix.cpu().numpy(), cmap='viridis', aspect='auto')
     plt.colorbar(label="Attention Similarity Score")
-    plt.title(f"Sample {sample_id + 1} - Layer Attention Similarity: Decode Step {step_i + 1}")
+    plt.title(f"Layer Attention Similarity")
     plt.xlabel("Layer Index (j)")
     plt.ylabel("Layer Index (i)")
 
@@ -237,76 +276,73 @@ def vis_layer_similarity_matrix(sample_id, step_i, similarity_matrix, output_dir
             plt.xticks(sparse_ticks, sparse_tick_labels)
             plt.yticks(sparse_ticks, sparse_tick_labels)
 
-    filename = f"sample_{sample_id + 1}_layer_similarity_step_{step_i + 1}.jpg"
+    filename = f"Layer Attention Similarity.jpg"
     filepath = os.path.join(output_dir, filename)
     try:
         plt.savefig(filepath, dpi=dpi)
-        print(f"    Saved layer similarity heatmap for step {step_i + 1} to {filepath}")
+        print(f"    Saved layer similarity heatmap to {filepath}")
     except Exception as e:
         print(f"    Error saving layer similarity plot to {filepath}: {e}")
     finally:
         plt.close()
 
 
-# --- Main Execution ---
 if __name__ == '__main__':
+    MODEL_PATH = "../models/Llama-3-8B-Instruct-262k"
+    DATA_PATH = "../OmniKV/benchmark/long_bench/data/hotpotqa.jsonl"
+    SAMPLE_NUM = 1
+    MAX_NEW_TOKENS_GENERATION = 20
+
+    print(f"Loading model and tokenizer from: {MODEL_PATH}")
     model, tkn = load_model_and_tokenizer(MODEL_PATH)
-    num_model_layers = model.config.num_hidden_layers  # Get total number of layers from model config
-    print(f"Model has {num_model_layers} hidden layers.")
 
+    # 2. Load data
+    print(f"Loading data from: {DATA_PATH} (first {SAMPLE_NUM} samples)")
     data_samples = load_data(DATA_PATH, SAMPLE_NUM)
-
     if not data_samples:
-        print("No data loaded or error in loading. Exiting.")
+        print("No data loaded. Exiting.")
     else:
-        for sample_idx, input_text in enumerate(data_samples):
-            print(f"\n--- Processing Sample {sample_idx + 1}/{len(data_samples)} ---")
-            # print(f"Input text (first 200 chars): {input_text[:200]}...")
+        print(f"Loaded {len(data_samples)} samples.")
 
-            output_text, collected_attentions = greedy_decode(
-                input_text, model, tkn, max_new_tokens=MAX_NEW_TOKENS_GENERATION
-            )
+    layers_sim = torch.zeros(model.config.num_hidden_layers, model.config.num_hidden_layers, device="cpu")
+    sim_cal_step = 0
+    for i, sample in enumerate(data_samples):
+        input_text = sample
 
-            # print(f"Generated text (first 200 chars): {output_text[:200]}...") # Optional: print generated text
-            print(f"Collected attentions for {len(collected_attentions)} decode steps.")
+        print(f"Input text: {input_text}\n")
 
-            if not collected_attentions:
-                print(
-                    "No decode attentions collected for this sample (e.g., max_new_tokens too small or EOS met early).")
-                continue
+        # 3. Greedy decode and get attention scores
+        output_text, collected_attentions = greedy_decode(input_text, model, tkn, max_new_tokens=MAX_NEW_TOKENS_GENERATION)
+        output_text = input_text + output_text
 
+        print(f"Generated text: {output_text}")
+        print(f"Number of decode steps for which attentions were collected: {len(collected_attentions)}")
+
+        # 4. Process attention scores for each step (if any were collected)
+        all_steps_processed_attns = []
+        if collected_attentions:
             for step_idx, attn_map_one_step in enumerate(collected_attentions):
-                # attn_map_one_step is a tuple of layer attentions for this decode step.
-                # Each layer_attn tensor is (batch_size, num_heads, 1, key_len_at_this_step).
-                print(f"  Processing & Visualizing Attentions for Decode Step {step_idx + 1}:")
+                print(f"  Processing attentions for decode step {step_idx + 1}:")
+                # attn_map_one_step is a tuple of layer attentions for this decode step
+                # Each layer_attn tensor is (batch_size, num_heads, 1, key_len_at_this_step)
+                # processed_layer_attns_for_step = cumsum_attn_score_for_each_layer(attn_map_one_step)
+                # all_steps_processed_attns.append(processed_layer_attns_for_step)
+                #
+                # # Visualize for this step
+                # for layer_idx, cumsum_attn_tensor in enumerate(processed_layer_attns_for_step):
+                #     print(f"    Layer {layer_idx + 1} processed cumsum attention shape: {cumsum_attn_tensor.shape}")
+                #     vis_cumsum_attn_for_each_layer_each_step(
+                #         step_idx, layer_idx, cumsum_attn_tensor
+                #     )
+                sim_cal_step += 1
+                for layer_i in range(model.config.num_hidden_layers):
+                    for layer_j in range(layer_i, model.config.num_hidden_layers):
+                        sim_ij = cal_attn_map_similarity(attn_map_one_step[layer_i], attn_map_one_step[layer_j])
+                        layers_sim[layer_i, layer_j] += sim_ij
+                        # 可视化
+        else:
+            print("No attention scores were collected (e.g., max_new_tokens was small or EOS met early).")
+        # `all_steps_processed_attns` is now a list (decode steps) of lists (layers)
+        # where each inner element is a tensor of shape (batch_size, key_len_at_that_step)
 
-                # 1. Cumulative Attention Visualization (per layer)
-                processed_layer_attns_for_step = cumsum_attn_score_for_each_layer(attn_map_one_step)
-                for layer_idx, cumsum_attn_tensor in enumerate(processed_layer_attns_for_step):
-                    vis_cumsum_attn_for_each_layer_each_step(
-                        sample_idx, step_idx, layer_idx, cumsum_attn_tensor,
-                        OUTPUT_VIS_DIR, PLOT_DPI
-                    )
-
-                # 2. Layer-wise Attention Similarity Matrix Visualization
-                # Ensure attn_map_one_step contains tensors for all model layers
-                if len(attn_map_one_step) != num_model_layers:
-                    print(
-                        f"    Warning: Mismatch in expected layers ({num_model_layers}) and attentions received ({len(attn_map_one_step)}) for step {step_idx + 1}. Skipping similarity matrix for this step.")
-                    continue
-
-                layer_similarity_matrix = torch.zeros((num_model_layers, num_model_layers), device='cpu')
-                for i in range(num_model_layers):
-                    for j in range(num_model_layers):
-                        # Get raw attention tensors for layer i and j at the current decode step
-                        raw_attn_i = attn_map_one_step[i]
-                        raw_attn_j = attn_map_one_step[j]
-
-                        sim_score = cal_attn_map_similarity(raw_attn_i, raw_attn_j, top_k_tokens=SIMILARITY_TOP_K)
-                        layer_similarity_matrix[i, j] = sim_score
-
-                vis_layer_similarity_matrix(
-                    sample_idx, step_idx, layer_similarity_matrix,
-                    OUTPUT_VIS_DIR, PLOT_DPI
-                )
-        print("\nProcessing complete. Visualizations saved to:", OUTPUT_VIS_DIR)
+        layers_sim /= sim_cal_step
