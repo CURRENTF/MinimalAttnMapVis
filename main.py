@@ -340,8 +340,7 @@ if __name__ == '__main__':
         # `all_steps_processed_attns` is now a list (decode steps) of lists (layers)
         # where each inner element is a tensor of shape (batch_size, key_len_at_that_step)
 
-        layers_sim /= sim_cal_step
-        vis_layer_similarity_matrix(layers_sim)
-        for i in range(16):
-            print(i, "sim", torch.mean(layers_sim[i, i:i+16]))
-            
+    layers_sim /= sim_cal_step
+    vis_layer_similarity_matrix(layers_sim)
+    for i in range(16):
+        print(i, "sim", torch.mean(layers_sim[i, i:i+16]))
