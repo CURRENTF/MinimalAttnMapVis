@@ -13,25 +13,6 @@ def load_model_and_tokenizer(model_path):
 
 
 def greedy_decode(input_text, model, tkn, max_new_tokens=50):
-    """
-    Generates text using greedy decoding and collects attention scores from decode phase.
-
-    Args:
-        input_text (str): The prompt text.
-        model: The GetAttnMapLM model instance.
-        tkn: The tokenizer instance.
-        max_new_tokens (int): The maximum number of new tokens to generate.
-
-    Returns:
-        tuple: (output_text, collected_decode_attentions)
-               output_text (str): The generated text including the prompt.
-               collected_decode_attentions (list): A list of tuples. Each tuple contains
-                                                   attention tensors for each layer for a single
-                                                   decode step. Attention tensor shape is
-                                                   (batch_size, num_heads, 1, key_sequence_length).
-                                                   The list corresponds to the generated tokens
-                                                   *after* the first one derived from the prompt.
-    """
     model.eval()  # Set model to evaluation mode
 
     inputs = tkn(input_text, return_tensors="pt").to(model.device)
@@ -117,16 +98,6 @@ def greedy_decode(input_text, model, tkn, max_new_tokens=50):
 
 
 def load_data(data_path, sample_num=10):
-    """
-    Loads data from a JSONL file.
-
-    Args:
-        data_path (str): Path to the JSONL file.
-        sample_num (int): Number of samples to load from the beginning of the file.
-
-    Returns:
-        list: A list of dictionaries, where each dictionary is a loaded JSON object.
-    """
     data_list = []
     try:
         with open(data_path, 'r', encoding='utf-8') as f:
@@ -146,21 +117,6 @@ def load_data(data_path, sample_num=10):
 
 
 def cumsum_attn_score_for_each_layer(attn_map_at_one_decode_step):
-    """
-    Processes attention scores for each layer from a single decode step.
-    It averages over heads and then calculates the cumulative sum over the key sequence length.
-
-    Args:
-        attn_map_at_one_decode_step (tuple): A tuple of attention tensors from a single decode step.
-                                            Each tensor corresponds to a layer and has a shape like
-                                            (batch_size, num_heads, query_length=1, key_sequence_length).
-                                            For typical decode steps, batch_size=1 and query_length=1.
-
-    Returns:
-        list: A list of processed attention tensors. Each tensor in the list has shape
-              (batch_size, key_sequence_length) after averaging over heads and
-              (batch_size, key_sequence_length) after cumsum.
-    """
     processed_layers_attn = []
     if attn_map_at_one_decode_step is None:
         return []
@@ -189,18 +145,6 @@ def cumsum_attn_score_for_each_layer(attn_map_at_one_decode_step):
 
 
 def vis_cumsum_attn_for_each_layer_each_step(step_i, layer_i, attn_cumsum_tensor, output_dir="visualizations"):
-    """
-    Visualizes the cumulative attention scores for a given layer and decode step,
-    and saves it as a JPG file.
-
-    Args:
-        step_i (int): The current decode step index (0-based).
-        layer_i (int): The current layer index (0-based).
-        attn_cumsum_tensor (torch.Tensor): The cumulative attention tensor for this layer/step.
-                                           Expected shape (batch_size, key_sequence_length).
-                                           Typically batch_size is 1.
-        output_dir (str): Directory to save the visualization.
-    """
     if attn_cumsum_tensor is None or attn_cumsum_tensor.numel() == 0:
         print(f"  Visualization skipped for step {step_i + 1}, layer {layer_i + 1}: Empty tensor.")
         return
@@ -212,9 +156,6 @@ def vis_cumsum_attn_for_each_layer_each_step(step_i, layer_i, attn_cumsum_tensor
             print(f"Error creating directory {output_dir}: {e}. Visualizations will not be saved.")
             return
 
-    # Assuming batch_size is 1, so we take the first element.
-    # If batch_size > 1, one might loop or plot all, or average.
-    # For this specific function, we'll plot the first batch element.
     if attn_cumsum_tensor.shape[0] > 1:
         print(
             f"  Warning: attn_cumsum_tensor has batch size {attn_cumsum_tensor.shape[0]} for step {step_i + 1}, layer {layer_i + 1}. Visualizing first batch element only.")
