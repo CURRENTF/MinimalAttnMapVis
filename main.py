@@ -192,36 +192,89 @@ def cal_attn_map_similarity(attn_cumsum_tensor_layer_i, attn_cumsum_tensor_layer
     return torch.sum(avg_head_attn_j[idx_i]).item()
 
 
-def vis_layer_similarity_matrix(similarity_matrix, output_dir="visualization", dpi=1000):
-    """Visualizes the layer-wise attention similarity matrix as a heatmap."""
+def vis_layer_similarity_matrix(
+        similarity_matrix,
+        output_dir="visualization",
+        dpi=1000,
+        show_values=True,  # 新增：是否在单元格中显示数值
+        annot_fmt=".2f",  # 新增：数值的格式化字符串 (例如, ".2f" 表示两位小数)
+        annot_fontsize=8,  # 新增：标注数值的字体大小
+        text_color_threshold=0.5  # 新增：决定文字颜色的阈值 (基于归一化的单元格颜色)
+):
+    """Visualizes the layer-wise attention similarity matrix as a heatmap
+       with optional display of similarity values on each cell."""
     plt.figure(figsize=(12, 10))
-    # Using aspect='auto' and letting imshow determine vmin/vmax, or they can be fixed.
-    plt.imshow(similarity_matrix.cpu().numpy(), cmap='viridis', aspect='auto')
+
+    # 确保 similarity_matrix 是 NumPy array 并且在 CPU 上
+    if isinstance(similarity_matrix, torch.Tensor):
+        matrix_np = similarity_matrix.detach().cpu().numpy()
+    elif isinstance(similarity_matrix, np.ndarray):
+        matrix_np = similarity_matrix
+    else:
+        raise TypeError("similarity_matrix must be a PyTorch Tensor or a NumPy array.")
+
+    # 使用 aspect='auto' 并让 imshow 确定 vmin/vmax, 或者可以固定它们。
+    # im 对象用于后续获取颜色范围
+    im = plt.imshow(matrix_np, cmap='viridis', aspect='auto')
+
     plt.colorbar(label="Attention Similarity Score")
     plt.title(f"Layer Attention Similarity")
     plt.xlabel("Layer Index (j)")
     plt.ylabel("Layer Index (i)")
 
-    num_layers = similarity_matrix.shape[0]
-    # Adjust ticks for readability based on number of layers
+    num_layers = matrix_np.shape[0]
+    # 根据层数调整刻度以提高可读性
     if num_layers > 0:
         ticks = list(range(num_layers))
-        tick_labels = [str(t + 1) for t in ticks]  # 1-indexed labels
-        if num_layers <= 32:  # Show all ticks for fewer layers
-            plt.xticks(ticks, tick_labels)
-            plt.yticks(ticks, tick_labels)
-        else:  # Show sparse ticks for many layers to avoid clutter
-            step_size = num_layers // 10 or 1  # Ensure step_size is at least 1
-            sparse_ticks = ticks[::step_size]
-            sparse_tick_labels = tick_labels[::step_size]
-            plt.xticks(sparse_ticks, sparse_tick_labels)
-            plt.yticks(sparse_ticks, sparse_tick_labels)
+        tick_labels = [str(t + 1) for t in ticks]  # 1-indexed 标签
+        # 如果层数过多，可以考虑减少刻度标签数量或旋转
+        tick_fontsize = 10
+        if num_layers > 20:
+            tick_fontsize = 8
+        if num_layers > 30:  # 对于非常多的层，可能需要更智能的刻度处理
+            step = max(1, num_layers // 15)  # 每隔 step 个显示一个刻度
+            ticks = list(range(0, num_layers, step))
+            tick_labels = [str(t + 1) for t in ticks]
+
+        plt.xticks(ticks, tick_labels, fontsize=tick_fontsize)
+        plt.yticks(ticks, tick_labels, fontsize=tick_fontsize)
+
+    # 在每个单元格上显示数值
+    if show_values and num_layers > 0:
+        # 获取 imshow 使用的颜色范围，用于决定文字颜色
+        # vmin, vmax = im.get_clim() # 这是推荐的方式
+        # 为了简化，如果你的 similarity_matrix 值总是在一个已知范围 (例如0-1),
+        # 你可以直接使用那个范围。否则，get_clim() 更鲁棒。
+        # 假设 similarity_matrix 的值主要在 0-1 之间，viridis 颜色映射从暗到亮
+        # 如果 imshow 自动调整 vmin/vmax，我们需要用 get_clim()
+        actual_vmin, actual_vmax = im.get_clim()
+
+        for i in range(num_layers):
+            for j in range(num_layers):
+                value = matrix_np[i, j]
+
+                # 根据单元格的值和颜色映射的范围决定文字颜色
+                # 将当前值归一化到颜色映射的范围内
+                if actual_vmax == actual_vmin:  # 避免除以零，如果所有值都相同
+                    normalized_value = 0.5  # 可以是0或1，这里取中间
+                else:
+                    normalized_value = (value - actual_vmin) / (actual_vmax - actual_vmin)
+
+                # Viridis: 0 (深紫) -> 0.5 (绿色) -> 1 (黄色)
+                # 如果归一化后的值小于阈值 (例如0.5)，则背景较暗，用浅色文字
+                # 否则背景较亮，用深色文字
+                text_color = "white" if normalized_value < text_color_threshold else "black"
+
+                plt.text(j, i, format(value, annot_fmt),
+                         ha="center", va="center",
+                         color=text_color, fontsize=annot_fontsize)
 
     filename = f"Layer Attention Similarity.jpg"
     os.makedirs(output_dir, exist_ok=True)
     filepath = os.path.join(output_dir, filename)
     try:
-        plt.savefig(filepath, dpi=dpi)
+        # bbox_inches='tight' 确保标签不会被裁剪
+        plt.savefig(filepath, dpi=dpi, bbox_inches='tight')
         print(f"    Saved layer similarity heatmap to {filepath}")
     except Exception as e:
         print(f"    Error saving layer similarity plot to {filepath}: {e}")
@@ -289,3 +342,4 @@ if __name__ == '__main__':
 
         layers_sim /= sim_cal_step
         vis_layer_similarity_matrix(layers_sim)
+        for i in range()
