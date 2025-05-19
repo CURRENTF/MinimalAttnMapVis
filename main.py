@@ -342,8 +342,11 @@ if __name__ == '__main__':
 
     layers_sim /= sim_cal_step
     vis_layer_similarity_matrix(layers_sim)
-    for i in range(16):
-        print(i, "similarity 16 layers", torch.mean(layers_sim[i, i:i+16]))
+    sims_lst = []
     for i in range(24):
-        print(i, "similarity 8 layers", torch.mean(layers_sim[i, i:i+8]))
+        # print(i, "similarity 8 layers", torch.mean(layers_sim[i, i:i+8]))
+        sims_lst += [torch.mean(layers_sim[i, i:i + 8]).item()]
+    xs = list(range(24))
+    plt.plot(xs, sims_lst)
+    plt.savefig("visualizations/8layers_sim.jpg", dpi=1000)
         
