@@ -188,7 +188,7 @@ def cal_attn_map_similarity(attn_cumsum_tensor_layer_i, attn_cumsum_tensor_layer
     avg_head_attn_i = torch.mean(attn_cumsum_tensor_layer_i.squeeze(), dim=0)
     avg_head_attn_j = torch.mean(attn_cumsum_tensor_layer_j.squeeze(), dim=0)
     assert avg_head_attn_i.ndim == 1
-    vi, idx_i = torch.topk(avg_head_attn_i, k=512, dim=-1)
+    vi, idx_i = torch.topk(avg_head_attn_i, k=256, dim=-1)
     return torch.sum(avg_head_attn_j[idx_i]).item()
 
 
@@ -343,4 +343,7 @@ if __name__ == '__main__':
     layers_sim /= sim_cal_step
     vis_layer_similarity_matrix(layers_sim)
     for i in range(16):
-        print(i, "sim", torch.mean(layers_sim[i, i:i+16]))
+        print(i, "similarity 16 layers", torch.mean(layers_sim[i, i:i+16]))
+    for i in range(24):
+        print(i, "similarity 8 layers", torch.mean(layers_sim[i, i:i+8]))
+        
