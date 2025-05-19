@@ -197,8 +197,8 @@ def vis_layer_similarity_matrix(
         output_dir="visualization",
         dpi=1000,
         show_values=True,  # 新增：是否在单元格中显示数值
-        annot_fmt=".2f",  # 新增：数值的格式化字符串 (例如, ".2f" 表示两位小数)
-        annot_fontsize=8,  # 新增：标注数值的字体大小
+        annot_fmt=".1f",  # 新增：数值的格式化字符串 (例如, ".2f" 表示两位小数)
+        annot_fontsize=6,  # 新增：标注数值的字体大小
         text_color_threshold=0.5  # 新增：决定文字颜色的阈值 (基于归一化的单元格颜色)
 ):
     """Visualizes the layer-wise attention similarity matrix as a heatmap
