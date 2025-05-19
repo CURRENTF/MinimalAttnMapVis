@@ -277,6 +277,7 @@ def vis_layer_similarity_matrix(similarity_matrix, output_dir="visualization", d
             plt.yticks(sparse_ticks, sparse_tick_labels)
 
     filename = f"Layer Attention Similarity.jpg"
+    os.makedirs(output_dir, exist_ok=True)
     filepath = os.path.join(output_dir, filename)
     try:
         plt.savefig(filepath, dpi=dpi)
