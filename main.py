@@ -188,7 +188,7 @@ def cal_attn_map_similarity(attn_cumsum_tensor_layer_i, attn_cumsum_tensor_layer
     avg_head_attn_i = torch.mean(attn_cumsum_tensor_layer_i.squeeze(), dim=0)
     avg_head_attn_j = torch.mean(attn_cumsum_tensor_layer_j.squeeze(), dim=0)
     assert avg_head_attn_i.ndim == 1
-    vi, idx_i = torch.topk(avg_head_attn_i, k=1024, dim=-1)
+    vi, idx_i = torch.topk(avg_head_attn_i, k=512, dim=-1)
     return torch.sum(avg_head_attn_j[idx_i]).item()
 
 
@@ -285,7 +285,7 @@ def vis_layer_similarity_matrix(
 if __name__ == '__main__':
     MODEL_PATH = "../models/Llama-3-8B-Instruct-262k"
     DATA_PATH = "../OmniKV/benchmark/long_bench/data/hotpotqa.jsonl"
-    SAMPLE_NUM = 1
+    SAMPLE_NUM = 10
     MAX_NEW_TOKENS_GENERATION = 20
 
     print(f"Loading model and tokenizer from: {MODEL_PATH}")
@@ -342,5 +342,6 @@ if __name__ == '__main__':
 
         layers_sim /= sim_cal_step
         vis_layer_similarity_matrix(layers_sim)
-        for i in range(32):
-            print(i, "sim", torch.mean(layers_sim[i, i:i+8]))
+        for i in range(16):
+            print(i, "sim", torch.mean(layers_sim[i, i:i+16]))
+            
